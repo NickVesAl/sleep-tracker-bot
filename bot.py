@@ -2,16 +2,18 @@ import os
 import logging
 import json
 from datetime import datetime
+import asyncio
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -21,14 +23,12 @@ OWNER_ID = int(os.getenv("OWNER_ID"))
 SPREADSHEET_NAME = "SleepLog"
 SHEET_NAME = "Лист1"
 
-# FSM состояния
 class SleepLogStates(StatesGroup):
     waiting_bedtime = State()
     waiting_waketime = State()
     waiting_feeling = State()
     waiting_comment = State()
 
-# Получение таблицы
 def get_sheet():
     credentials_json = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -37,9 +37,9 @@ def get_sheet():
     sheet = client.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
     return sheet
 
-# Инициализация
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+bot = Bot(token=TOKEN, default=types.BotDefault(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
+scheduler = AsyncIOScheduler()
 
 @dp.message(SleepLogStates.waiting_bedtime)
 async def bedtime_handler(message: Message, state: FSMContext):
@@ -82,17 +82,13 @@ async def start_conversation(message: Message, state: FSMContext):
     await message.answer("🛏 Во сколько ты лёг?")
     await state.set_state(SleepLogStates.waiting_bedtime)
 
-# Планировщик
-scheduler = AsyncIOScheduler()
-
 async def ask_questions():
     await bot.send_message(OWNER_ID, "🛏 Во сколько ты лёг?")
 
-scheduler.add_job(ask_questions, CronTrigger(hour=9, minute=0))
-scheduler.start()
-
-# Запуск
-if __name__ == "__main__":
+async def main():
     logging.basicConfig(level=logging.INFO)
-    import asyncio
-    asyncio.run(dp.start_polling(bot))
+    scheduler.add_job(ask_questions, CronTrigger(hour=9, minute=0))
+    scheduler.start()
+    await dp.start_polling(bot)
+
+asyncio.run(main())
