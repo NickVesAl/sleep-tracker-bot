@@ -31,11 +31,11 @@ class SleepLogStates(StatesGroup):
     waiting_comment = State()
 
 def get_sheet():
-    credentials_json = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_json, scope)
+    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
     client = gspread.authorize(creds)
-    return client.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
+    sheet = client.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
+    return sheet
 
 # Инициализация бота с правильным parse_mode
 bot = Bot(
