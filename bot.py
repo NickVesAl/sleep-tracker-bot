@@ -1,95 +1,98 @@
-
-import json
-import logging
 import os
+import logging
+import json
 from datetime import datetime
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.enums.parse_mode import ParseMode
+from aiogram import Bot, Dispatcher, types
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from gspread import authorize
+import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+# Конфигурация
 TOKEN = "8128014975:AAHwYRzNnFPoUuaYbCf9vhqTz01HwUfCngQ"
+OWNER_ID = int(os.getenv("OWNER_ID"))
+SPREADSHEET_NAME = "SleepLog"
+SHEET_NAME = "Лист1"
 
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
-dp = Dispatcher(storage=MemoryStorage())
+# FSM состояния
+class SleepLogStates(StatesGroup):
+    waiting_bedtime = State()
+    waiting_waketime = State()
+    waiting_feeling = State()
+    waiting_comment = State()
 
-logging.basicConfig(level=logging.INFO)
-
-class SleepLog(StatesGroup):
-    sleep_time = State()
-    wake_time = State()
-    feeling = State()
-    comment = State()
-
+# Получение таблицы
 def get_sheet():
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    credentials_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scope)
-    client = authorize(creds)
-    sheet = client.open("SleepLog").worksheet("Лист1")
+    credentials_json = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_json, scope)
+    client = gspread.authorize(creds)
+    sheet = client.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
     return sheet
 
-@dp.message(F.text.lower() == "/start")
-async def start(message: Message, state: FSMContext):
-    await message.answer("🛏️ Во сколько ты лёг?")
-    await state.set_state(SleepLog.sleep_time)
+# Инициализация
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
 
-@dp.message(SleepLog.sleep_time)
-async def handle_sleep_time(message: Message, state: FSMContext):
-    await state.update_data(sleep_time=message.text)
+@dp.message(SleepLogStates.waiting_bedtime)
+async def bedtime_handler(message: Message, state: FSMContext):
+    await state.update_data(bedtime=message.text)
     await message.answer("🌞 Во сколько ты проснулся?")
-    await state.set_state(SleepLog.wake_time)
+    await state.set_state(SleepLogStates.waiting_waketime)
 
-@dp.message(SleepLog.wake_time)
-async def handle_wake_time(message: Message, state: FSMContext):
-    await state.update_data(wake_time=message.text)
+@dp.message(SleepLogStates.waiting_waketime)
+async def waketime_handler(message: Message, state: FSMContext):
+    await state.update_data(waketime=message.text)
     await message.answer("😊 Как ты себя чувствуешь от 1 до 10?")
-    await state.set_state(SleepLog.feeling)
+    await state.set_state(SleepLogStates.waiting_feeling)
 
-@dp.message(SleepLog.feeling)
-async def handle_feeling(message: Message, state: FSMContext):
+@dp.message(SleepLogStates.waiting_feeling)
+async def feeling_handler(message: Message, state: FSMContext):
     await state.update_data(feeling=message.text)
-    await message.answer("💬 Будет какой-то комментарий?")
-    await state.set_state(SleepLog.comment)
+    await message.answer("✍️ Хочешь оставить комментарий?")
+    await state.set_state(SleepLogStates.waiting_comment)
 
-@dp.message(SleepLog.comment)
-async def handle_comment(message: Message, state: FSMContext):
-    await state.update_data(comment=message.text)
+@dp.message(SleepLogStates.waiting_comment)
+async def comment_handler(message: Message, state: FSMContext):
     data = await state.get_data()
-
-    now = datetime.now().strftime("%Y-%m-%d")
-    row = [now, data['sleep_time'], data['wake_time'], data['feeling'], data['comment']]
-    try:
-        sheet = get_sheet()
-        sheet.append_row(row)
-        await message.answer("✅ Спасибо! Я записал это в таблицу.")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка при записи в таблицу: {e}")
-
+    comment = message.text
+    sheet = get_sheet()
+    row = [
+        datetime.now().strftime("%d.%m.%Y"),
+        data["bedtime"],
+        data["waketime"],
+        data["feeling"],
+        comment
+    ]
+    sheet.append_row(row)
+    await message.answer("✅ Спасибо! Я записал это в таблицу.")
     await state.clear()
 
+@dp.message()
+async def start_conversation(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return await message.answer("⛔️ У тебя нет доступа к этому боту.")
+    await message.answer("🛏 Во сколько ты лёг?")
+    await state.set_state(SleepLogStates.waiting_bedtime)
+
+# Планировщик
+scheduler = AsyncIOScheduler()
+
 async def ask_questions():
-    await bot.send_message(chat_id="8128014975", text="🛏️ Во сколько ты лёг?")
-    # будет триггериться обычный flow дальше через FSM
+    await bot.send_message(OWNER_ID, "🛏 Во сколько ты лёг?")
 
-def setup_scheduler():
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(ask_questions, CronTrigger(hour=9, minute=0))  # В 9:00 по UTC
-    scheduler.start()
+scheduler.add_job(ask_questions, CronTrigger(hour=9, minute=0))
+scheduler.start()
 
+# Запуск
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     import asyncio
-    from aiogram import executor
-
-    async def main():
-        setup_scheduler()
-        await dp.start_polling(bot)
-
-    asyncio.run(main())
+    asyncio.run(dp.start_polling(bot))
