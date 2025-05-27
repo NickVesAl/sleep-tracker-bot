@@ -4,7 +4,8 @@ import json
 from datetime import datetime
 import asyncio
 
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -34,10 +35,13 @@ def get_sheet():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_json, scope)
     client = gspread.authorize(creds)
-    sheet = client.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
-    return sheet
+    return client.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
 
-bot = Bot(token=TOKEN, default=types.BotDefault(parse_mode=ParseMode.HTML))
+# Инициализация бота с правильным parse_mode
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 
@@ -78,7 +82,7 @@ async def comment_handler(message: Message, state: FSMContext):
 @dp.message()
 async def start_conversation(message: Message, state: FSMContext):
     if message.from_user.id != OWNER_ID:
-        return await message.answer("⛔️ У тебя нет доступа к этому боту.")
+        return await message.answer("⛔️ У тебя нет доступа.")
     await message.answer("🛏 Во сколько ты лёг?")
     await state.set_state(SleepLogStates.waiting_bedtime)
 
@@ -91,4 +95,5 @@ async def main():
     scheduler.start()
     await dp.start_polling(bot)
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
