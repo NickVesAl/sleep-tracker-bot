@@ -1,93 +1,95 @@
-import asyncio
+
+import json
 import logging
+import os
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import Command
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.enums.parse_mode import ParseMode
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import gspread
+from apscheduler.triggers.cron import CronTrigger
+from gspread import authorize
 from oauth2client.service_account import ServiceAccountCredentials
 
-# --- НАСТРОЙКИ ---
 TOKEN = "8128014975:AAHwYRzNnFPoUuaYbCf9vhqTz01HwUfCngQ"
-YOUR_CHAT_ID = None  # получим после /start
-SPREADSHEET_NAME = "SleepLog"
 
-# --- Google Sheets ---
+bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher(storage=MemoryStorage())
+
+logging.basicConfig(level=logging.INFO)
+
+class SleepLog(StatesGroup):
+    sleep_time = State()
+    wake_time = State()
+    feeling = State()
+    comment = State()
+
 def get_sheet():
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-    client = gspread.authorize(creds)
-    sheet = client.open(SPREADSHEET_NAME).sheet1
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    credentials_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scope)
+    client = authorize(creds)
+    sheet = client.open("SleepLog").worksheet("Лист1")
     return sheet
 
-# --- Данные пользователя ---
-user_data = {}
+@dp.message(F.text.lower() == "/start")
+async def start(message: Message, state: FSMContext):
+    await message.answer("🛏️ Во сколько ты лёг?")
+    await state.set_state(SleepLog.sleep_time)
 
-async def ask_questions(bot: Bot):
-    global YOUR_CHAT_ID
-    if YOUR_CHAT_ID is None:
-        print("❌ YOUR_CHAT_ID не установлен. Напиши /start боту")
-        return
-    await bot.send_message(YOUR_CHAT_ID, "🛌 Во сколько ты лёг?")
-    user_data[YOUR_CHAT_ID] = {'stage': 1}
+@dp.message(SleepLog.sleep_time)
+async def handle_sleep_time(message: Message, state: FSMContext):
+    await state.update_data(sleep_time=message.text)
+    await message.answer("🌞 Во сколько ты проснулся?")
+    await state.set_state(SleepLog.wake_time)
 
-# --- Ответы ---
-async def handle_message(message: types.Message):
-    chat_id = message.chat.id
-    text = message.text.strip()
+@dp.message(SleepLog.wake_time)
+async def handle_wake_time(message: Message, state: FSMContext):
+    await state.update_data(wake_time=message.text)
+    await message.answer("😊 Как ты себя чувствуешь от 1 до 10?")
+    await state.set_state(SleepLog.feeling)
 
-    if chat_id not in user_data:
-        await message.answer("Напиши /start, чтобы бот знал, куда писать.")
-        return
+@dp.message(SleepLog.feeling)
+async def handle_feeling(message: Message, state: FSMContext):
+    await state.update_data(feeling=message.text)
+    await message.answer("💬 Будет какой-то комментарий?")
+    await state.set_state(SleepLog.comment)
 
-    stage = user_data[chat_id]['stage']
+@dp.message(SleepLog.comment)
+async def handle_comment(message: Message, state: FSMContext):
+    await state.update_data(comment=message.text)
+    data = await state.get_data()
 
-    if stage == 1:
-        user_data[chat_id]['sleep_time'] = text
-        user_data[chat_id]['stage'] = 2
-        await message.answer("🌞 Во сколько ты проснулся?")
-    elif stage == 2:
-        user_data[chat_id]['wake_time'] = text
-        user_data[chat_id]['stage'] = 3
-        await message.answer("😊 Как ты себя чувствуешь от 1 до 10?")
-    elif stage == 3:
-        user_data[chat_id]['mood'] = text
-        await message.answer("✅ Спасибо! Я записал это в таблицу.")
-
-        # Сохраняем в таблицу
+    now = datetime.now().strftime("%Y-%m-%d")
+    row = [now, data['sleep_time'], data['wake_time'], data['feeling'], data['comment']]
+    try:
         sheet = get_sheet()
-        today = datetime.now().strftime("%d.%m.%Y")
-        sheet.append_row([
-            today,
-            user_data[chat_id]['sleep_time'],
-            user_data[chat_id]['wake_time'],
-            user_data[chat_id]['mood']
-        ])
+        sheet.append_row(row)
+        await message.answer("✅ Спасибо! Я записал это в таблицу.")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при записи в таблицу: {e}")
 
-        del user_data[chat_id]
+    await state.clear()
 
-# --- Команда /start ---
-async def start_handler(message: types.Message):
-    global YOUR_CHAT_ID
-    YOUR_CHAT_ID = message.chat.id
-    await message.answer("✅ Бот активен. Я буду спрашивать тебя каждый день в 9:00.")
+async def ask_questions():
+    await bot.send_message(chat_id="8128014975", text="🛏️ Во сколько ты лёг?")
+    # будет триггериться обычный flow дальше через FSM
 
-# --- Основной запуск ---
-async def main():
-    logging.basicConfig(level=logging.INFO)
-    bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp = Dispatcher()
-
-    dp.message.register(start_handler, Command("start"))
-    dp.message.register(handle_message)
-
+def setup_scheduler():
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(ask_questions, "interval", minutes=1, args=[bot])  # ⏰ 9:00 по серверному времени
+    scheduler.add_job(ask_questions, CronTrigger(hour=9, minute=0))  # В 9:00 по UTC
     scheduler.start()
 
-    await dp.start_polling(bot)
-
 if __name__ == "__main__":
+    import asyncio
+    from aiogram import executor
+
+    async def main():
+        setup_scheduler()
+        await dp.start_polling(bot)
+
     asyncio.run(main())
