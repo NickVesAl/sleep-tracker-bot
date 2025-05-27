@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: sleep-tracker-bot
+    env: python
+    buildCommand: ""
+    startCommand: "python bot.py"
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10
